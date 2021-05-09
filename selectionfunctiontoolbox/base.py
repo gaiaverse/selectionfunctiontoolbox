@@ -205,7 +205,7 @@ class Base:
             print('Spherical basis file does not exist, generating... (this may take some time!)')
             self._generate_spherical_basis(self.spherical_basis_directory + self.spherical_basis_file)
 
-        # Load spherical wavelets
+        # Load spherical basis
         with h5py.File(self.spherical_basis_directory + self.spherical_basis_file, 'r') as sbf:
             self.basis = {k:v[()] for k,v in sbf.items()}
 
