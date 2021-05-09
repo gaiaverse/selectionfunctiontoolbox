@@ -30,7 +30,7 @@ class Base:
 
     basis_keyword = 'base' # This must be changed in each file.
 
-    def __init__(self, k, n, basis_options, file_root, axes  = ['magnitude','colour','position'], lengthscale_m = 1.0, lengthscale_c = 1.0, M = None, C = None, Mlim=[-100,100], Clim=[-100,100], nside = None, sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4, nest = True, mu = None, sigma = None, spherical_basis_directory='./SphericalBasis',stan_model_directory='./StanModels',stan_output_directory='./StanOutput'):
+    def __init__(self, k, n, file_root, basis_options = {}, axes  = ['magnitude','colour','position'], lengthscale_m = 1.0, lengthscale_c = 1.0, M = None, C = None, P = None, Mlim=[-100,100], Clim=[-100,100], nside = None, sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4, nest = None, mu = None, sigma = None, spherical_basis_directory='./SphericalBasis',stan_model_directory='./StanModels',stan_output_directory='./StanOutput'):
 
         # Utilities
         self.order_to_nside = lambda order: 2**order
@@ -54,7 +54,7 @@ class Base:
         self._reshape_k_and_n(k,n,axes)
 
         # Downgrade the resolution
-        self._downgrade_resolution(M,C,nside)
+        self._downgrade_resolution(M,C,P,nside)
 
         # These must both be in units of bins!
         self.lengthscale_m = lengthscale_m
@@ -95,13 +95,12 @@ class Base:
         # Extract maxima
         _size_z = self.S*self.M_subspace*self.C_subspace
         _size_x = self.M*self.C*self.P
-        _ring_indices = hp.nest2ring(self.nside, np.arange(self.P))
         self.optimum_lnp = _stan_optimum.optimized_params_np[0]
         self.optimum_z = np.transpose(_stan_optimum.optimized_params_np[1:1+_size_z].reshape((self.C_subspace,self.M_subspace,self.S)))
+        self.optimum_x = np.transpose(_stan_optimum.optimized_params_np[1+_size_z:].reshape((self.P,self.C,self.M)))
         if self.nest:
-            self.optimum_x = self._ring_to_nest(np.transpose(_stan_optimum.optimized_params_np[1+_size_z:].reshape((self.P,self.C,self.M))))
-        else:
-            self.optimum_x = np.transpose(_stan_optimum.optimized_params_np[1+_size_z:].reshape((self.P,self.C,self.M)))
+            _ring_indices = hp.nest2ring(self.nside, np.arange(self.P))
+            self.optimum_x = self._ring_to_nest(self.optimum_x)
         self.optimum_b = self.stan_input['mu'][:,None,None] + self.stan_input['sigma'][:,None,None] * (self.cholesky_m @ self.optimum_z @ self.cholesky_c.T)
 
         # Move convergence information somewhere useful
@@ -171,13 +170,16 @@ class Base:
         self.n_original = np.moveaxis(n.copy().reshape(n.shape+(1,)*(3-axes_size)),range(axes_size),new_indices)
 
         self.M_original, self.C_original, self.P_original = self.k_original.shape
-        assert hp.isnpixok(self.P_original) # number of pixels must be valid
+        if self.nest != None:
+            assert hp.isnpixok(self.P_original) # number of pixels must be valid if we are using a healpix position basis
 
-    def _downgrade_resolution(self,M,C,nside):
+    def _downgrade_resolution(self,M,C,P,nside):
 
         self.M = self.M_original if M == None else M
         self.C = self.C_original if C == None else C
-        if nside == None:
+        if self.nest == None:
+            self.P = self.P_original if P == None else P
+        elif nside == None:
             self.nside = hp.npix2nside(self.P_original)
             self.P = self.P_original
         else:
@@ -187,7 +189,11 @@ class Base:
 
         _downgrade = lambda A: A.reshape(self.M, self.M_original//self.M, self.C, self.C_original//self.C, self.P, self.P_original//self.P).sum(axis=(1,3,5))
 
-        if self.nest:
+        if self.nest == None:
+            # We are not using spherical geometry
+            self.k = _downgrade(self.k_original)
+            self.n = _downgrade(self.n_original)
+        elif self.nest == True:
             self.k = self._nest_to_ring(_downgrade(self.k_original))
             self.n = self._nest_to_ring(_downgrade(self.n_original))
         else:
@@ -266,11 +272,17 @@ class Base:
 
     def _load_stan_model(self):
 
-        _model_file = f'{self.basis_keyword}_magnitude_colour_position'
-        _model_file += '_sparse' if self.sparse else ''
+        _model_file = self.stan_model_directory+f"{self.basis_keyword}_magnitude_colour_position{'_sparse' if self.sparse else ''}.stan"
+
+        if not os.path.isfile(_model_file):
+            with open(_model_file, 'w') as f:
+                f.write(self._yield_stan_model())
 
         from cmdstanpy import CmdStanModel
-        self.stan_model = CmdStanModel(stan_file = self.stan_model_directory+_model_file+'.stan', cpp_options={"STAN_THREADS": True})
+        self.stan_model = CmdStanModel(stan_file = _model_file, cpp_options={"STAN_THREADS": True})
+
+    def _yield_stan_model(self):
+        pass
 
     def _construct_stan_input(self):
 
