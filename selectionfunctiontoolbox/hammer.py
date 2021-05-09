@@ -24,7 +24,7 @@ import numpy as np
 import healpy as hp
 import tqdm
 import h5py
-from SelectionFunctionBase import Base
+from .base import Base
 import os
 
 class Hammer(Base):
