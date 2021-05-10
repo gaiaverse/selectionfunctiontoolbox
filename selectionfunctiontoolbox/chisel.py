@@ -195,81 +195,93 @@ class Chisel(Base):
                 f.create_dataset('wavelet_U', data = wavelet_U, dtype = np.uint64, scaleoffset=0, **save_kwargs)
                 f.create_dataset('wavelet_n', data = wavelet_n)
                 f.create_dataset('modes', data = wavelet_j, dtype = np.uint64, scaleoffset=0, **save_kwargs)
-        else: return Y
+        else: 
+            return Y
 
-        
-    @staticmethod
-    @njit(parallel=parallel)
-    def wavelet_x_sparse(z, M, C, mu, sigma, wavelet, cholesky_m, cholesky_c, x):
+    def _yield_stan_model(self):
+        if self.sparse:
+            cholesky_parameters = '''
+            int cholesky_n_m;                     // sparse cholesky in magnitude - number of nonzero elements
+            row_vector[cholesky_n_m] cholesky_w_m;// sparse cholesky in magnitude - nonzero elements
+            int cholesky_v_m[cholesky_n_m];       // sparse cholesky in magnitude - columns of nonzero elements
+            int cholesky_u_m[M+1];                // sparse cholesky in magnitude - where in w each row starts
+            int cholesky_n_c;                     // sparse cholesky in colour - number of nonzero elements
+            vector[cholesky_n_c] cholesky_w_c;    // sparse cholesky in colour - nonzero elements
+            int cholesky_v_c[cholesky_n_c];       // sparse cholesky in colour - columns of nonzero elements
+            int cholesky_u_c[C+1];                // sparse cholesky in colour - where in w each row starts
+            '''
+            cholesky_loop = '''
+            b[s] = mu[s] + sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
+            '''
+        else:
+            cholesky_parameters = '''
+            row_vector[M_subspace] cholesky_m[M]; // Cholesky factor in magnitude space
+            vector[C_subspace] cholesky_c[C];     // Cholesky factor in colour space
+            '''
+            cholesky_loop = '''
+            b[s] = mu[s] + sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
+            '''
 
-        x *= 0.
+        stan_model = f'''
+        data {{
+            int<lower=0> P;                       // number of pixels
+            int<lower=0> M;                       // number of bins in magnitude space
+            int<lower=0> M_subspace;              // number of inducing points in magnitude space
+            int<lower=0> C;                       // number of bins in colour space
+            int<lower=0> C_subspace;              // number of inducing points in colour space
+            int<lower=0> S;                       // number of wavelets
+            int wavelet_n;                        // sparse wavelets - number of nonzero elements
+            vector[wavelet_n] wavelet_w;          // sparse wavelets - nonzero elements
+            int wavelet_v[wavelet_n];             // sparse wavelets - columns of nonzero elements
+            int wavelet_u[P+1];                   // sparse wavelets - where in w each row starts
+            vector[S] mu;                         // mean of each wavelet
+            vector[S] sigma;                      // sigma of each wavelet
+            int k[M,C,P];                         // number of heads
+            int n[M,C,P];                         // number of flips
+            {cholesky_parameters}
+        }}
+        parameters {{
+            matrix[M_subspace,C_subspace] z[S];
+        }}
+        transformed parameters {{
 
-        for iP, iS, wSP in wavelet:
-            for iM, iMsub, wM in cholesky_m:
-                for iC, iCsub, wC in cholesky_c:
-                    x[iP,iM,iC] += wM * z[iS,iMsub,iCsub] * wC * sigma[iS] * wSP
+            vector[P] x[M,C]; // Probability in logit-space
+                
+            // Loop over magnitude and colour
+            for (m in 1:M){{
+                for (c in 1:C){{
+                    
+                    // Local variable
+                    vector[S] b;
+                        
+                    // Compute b
+                    for (s in 1:S){{
+                        {cholesky_loop}
+                    }}
+                        
+                    // Compute x
+                    x[m,c] = csr_matrix_times_vector(P, S, wavelet_w, wavelet_v, wavelet_u, b);
 
-            for iM in range(M):
-                for iC in range(C):
-                    x[iP,iM,iC] += mu[iS] * wSP
+                }}  
+            }}
 
-        return x
-    
-    @staticmethod
-    @njit
-    def wavelet_b_sparse(z, M, C, S, mu, sigma, cholesky_m, cholesky_c, b):
+        }}
+        model {{
 
-        b *= 0.
+            // Prior
+            for (s in 1:S){{
+                to_vector(z[s]) ~ std_normal();
+            }}
+            
+            // Likelihood
+            for (m in 1:M){{
+                for (c in 1:C){{
+                    k[m,c] ~ binomial_logit(n[m,c], x[m,c]);
+                }}
+            }}
+            
+        }}
+        '''
 
-        # Iterate over modes which are not sparsified in Y
-        for iS in range(S):
-            for iM, iMsub, wM in cholesky_m:
-                for iC, iCsub, wC in cholesky_c:
-                    b[iS, iM, iC] += sigma[iS] * wM * z[iS,iMsub,iCsub] * wC;
+        return stan_model
 
-            for iM in range(M):
-                for iC in range(C):
-                    b[iS,iM,iC] += mu[iS]
-
-        return b
-
-
-    @staticmethod
-    @njit(parallel=parallel)
-    def wavelet_magnitude_colour_position_sparse(z, M, C, P, k, n, mu, sigma,
-                                                    wavelet_u, wavelet_v, wavelet_w,
-                                                    cholesky_u_m, cholesky_v_m, cholesky_w_m,
-                                                    cholesky_u_c, cholesky_v_c, cholesky_w_c,
-                                                    x, lnL_grad):
-
-        wavelet = list(zip(wavelet_u, wavelet_v, wavelet_w))
-        cholesky_m = list(zip(cholesky_u_m, cholesky_v_m, cholesky_w_m))
-        cholesky_c = list(zip(cholesky_u_c, cholesky_v_c, cholesky_w_c))
-
-        x *= 0.
-        for iP, iS, wSP in wavelet:
-            tmpS = wSP * sigma[iS]
-            for iM, iMsub, wM in cholesky_m:
-                tmpM = wM * tmpS
-                for iC, iCsub, wC in cholesky_c:
-                    x[iP,iM,iC] += z[iS,iMsub,iCsub] * wC * tmpM
-
-            tmpS = wSP * mu[iS]
-            for iM in range(M):
-                for iC in range(C):
-                    x[iP,iM,iC] += tmpS
-        #x = wavelet_x_sparse(z, M, C, mu, sigma, wavelet, cholesky_m, cholesky_c, x)
-
-        d = 1 + np.exp(-np.abs(x))
-        lnL = np.sum( k*x - n*(x/2 + np.abs(x)/2 + np.log(d) ) )
-
-        lnL_grad *= 0.
-        for iP, iS, wSP in wavelet:
-            tmpS = wSP * sigma[iS]
-            for iM, iMsub, wM in cholesky_m:
-                tmpM = wM * tmpS
-                for iC, iCsub, wC in cholesky_c:
-                    lnL_grad[iS,iMsub,iCsub] += ( k[iP,iM,iC] - n[iP,iM,iC]*(0.5 + np.sign(x[iP,iM,iC])*(1/d[iP,iM,iC] - 0.5)) ) * wC * tmpM
-
-        # Add on Gaussian prior
-        return lnL, lnL_grad
