@@ -46,10 +46,10 @@ class Chisel(Base):
         self.S = sum([self.order_to_npix(_j) if _j >= 0 else 1 for _j in self.j])
 
         if self.needlet == 'chisquare':
-            from SelectionFunctionUtils import chisquare
-            self.weighting = chisquare(self.j, p = self.p, B = self.B, normalise=True)
+            from .utils import chisquare
+            self.weighting = chisquare(self.j, p = self.p, B = self.B)
         else:
-            from SelectionFunctionUtils import littlewoodpaley
+            from .utils import littlewoodpaley
             self.weighting = littlewoodpaley(B = self.B)
 
     def _process_sigma_basis_specific(self,sigma):

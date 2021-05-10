@@ -107,48 +107,16 @@ class littlewoodpaley:
 
 class chisquare:
 
-    def __init__(self, j, p = 1.0, B = 2.0, F = 1e-6, normalise = False):
+    def __init__(self, j, p = 1.0, B = 2.0, F = 1e-6):
 
         self.j = np.array([_j for _j in j if _j >= 0])
         self.p = p
         self.B = B
         self.F = F
-        self.normalise = normalise
-        self.compute_normalisation()
-        self.compute_needlet_normalisation()
 
     def window_function(self, l, j):
         u = l*(l+1) / np.power(self.B,2.0*j)
-        N = self.normalisation[l.astype(np.int)] if type(l) == np.ndarray else self.normalisation[int(l)]
-
-        return N*np.power(u,self.p)*np.exp(-u)
-
-    def compute_normalisation(self):
-
-        self.lmax = self.end(max(self.j))
-        self.normalisation = np.ones(self.lmax+1)
-
-        if self.normalise == True:
-            # Renormalise (Marinucci 2008) Equation 2
-            jinf = np.arange(1000)
-            for l in range(1,self.lmax+1):
-                self.normalisation[l] = 1.0/np.sum(np.square(self.window_function(l,jinf)))
-
-    def compute_needlet_normalisation(self):
-
-        self.needlet_normalisaiton = np.ones(len(self.j)+1)
-
-        for ineedlet, j in enumerate(self.j):
-            if j==-1:
-                self.needlet_normalisaiton[ineedlet]=1.0
-                continue
-
-            start = self.start(j)
-            end = self.end(j)
-            modes = np.arange(start, end + 1, dtype = 'float')
-            window = self.window_function(modes,j)*(2.0*modes+1.0)/np.sqrt(4.0*np.pi)#*npix_needle)
-
-            self.needlet_normalisaiton[ineedlet] = np.sum(window)
+        return np.power(u,self.p)*np.exp(-u)
 
     def start(self, j):
         return 1

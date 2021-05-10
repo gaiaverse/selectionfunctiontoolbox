@@ -25,12 +25,13 @@ import healpy as hp
 import tqdm
 import h5py
 import os
+from .kernel import IdentityKernel
 
 class Base:
 
     basis_keyword = 'base' # This must be changed in each file.
 
-    def __init__(self, k, n, file_root, basis_options = {}, axes  = ['magnitude','colour','position'], lengthscale_m = 1.0, lengthscale_c = 1.0, M = None, C = None, P = None, Mlim=[-100,100], Clim=[-100,100], nside = None, sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4, nest = None, mu = None, sigma = None, spherical_basis_directory='./SphericalBasis',stan_model_directory='./StanModels',stan_output_directory='./StanOutput'):
+    def __init__(self, k, n, file_root, basis_options = {}, axes  = ['magnitude','colour','position'], magnitude_bins = None, colour_bins = None, magnitude_kernel = None, colour_kernel = None, sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4, nest = None, mu = None, sigma = None, spherical_basis_directory='./SphericalBasis',stan_model_directory='./StanModels',stan_output_directory='./StanOutput'):
 
         # Utilities
         self.order_to_nside = lambda order: 2**order
@@ -47,18 +48,8 @@ class Base:
         self.pivot_tol = pivot_tol
         self.nest = nest
 
-        self.Mlim = Mlim
-        self.Clim = Clim
-
         # Reshape k and n to be valid
         self._reshape_k_and_n(k,n,axes)
-
-        # Downgrade the resolution
-        self._downgrade_resolution(M,C,P,nside)
-
-        # These must both be in units of bins!
-        self.lengthscale_m = lengthscale_m
-        self.lengthscale_c = lengthscale_c
 
         # Process basis-specific options
         self._process_basis_options(**basis_options)
@@ -66,9 +57,15 @@ class Base:
         # Load spherical basis
         self._load_spherical_basis()
 
+        # Process covariance kernel options
+        self.magnitude_bins = magnitude_bins if magnitude_bins != None else np.arange(self.M)
+        self.colour_bins = colour_bins if colour_bins != None else np.arange(self.C)
+        self.magnitude_kernel = magnitude_kernel if magnitude_kernel != None else IdentityKernel(self.M)
+        self.colour_kernel = colour_kernel if colour_kernel != None else IdentityKernel(self.C)
+
         # Compute cholesky matrices
-        self.M_subspace, self.cholesky_m = self._construct_cholesky_matrix(self.M,self.lengthscale_m)
-        self.C_subspace, self.cholesky_c = self._construct_cholesky_matrix(self.C,self.lengthscale_c)
+        self.M_subspace, self.cholesky_m = self._construct_cholesky_matrix(self.magnitude_kernel,self.magnitude_bins)
+        self.C_subspace, self.cholesky_c = self._construct_cholesky_matrix(self.colour_kernel,self.colour_bins)
 
         # Process mu and sigma
         self._process_mu(mu)
@@ -101,7 +98,6 @@ class Base:
         if self.nest:
             _ring_indices = hp.nest2ring(self.nside, np.arange(self.P))
             self.optimum_x = self._ring_to_nest(self.optimum_x)
-        self.optimum_b = self.stan_input['mu'][:,None,None] + self.stan_input['sigma'][:,None,None] * (self.cholesky_m @ self.optimum_z @ self.cholesky_c.T)
 
         # Move convergence information somewhere useful
         import shutil
@@ -119,10 +115,9 @@ class Base:
             orf.create_dataset('opt_runtime', data = runtime)
             orf.create_dataset('lnP', data = self.optimum_lnp)
             orf.create_dataset('z', data = self.optimum_z, dtype = np.float64, compression = 'lzf', chunks = True)
-            orf.create_dataset('b', data = self.optimum_b, dtype = np.float64, compression = 'lzf', chunks = True)
             orf.create_dataset('x', data = self.optimum_x, dtype = np.float64, compression = 'lzf', chunks = True)
-            orf.create_dataset('Mlim', data = self.Mlim, dtype = np.float64)
-            orf.create_dataset('Clim', data = self.Clim, dtype = np.float64)
+            orf.create_dataset('magnitude_bins', data = self.magnitude_bins, dtype = np.float64)
+            orf.create_dataset('colour_bins', data = self.colour_bins, dtype = np.float64)
             for key in keys:
                 try: orf.create_dataset(key, data = getattr(self, key), dtype = np.float64)
                 except AttributeError: print(f'No attribute: {key}')
@@ -166,41 +161,12 @@ class Base:
         assert k.shape == n.shape # k and n must have same shape
 
         new_indices = [possible_axes.index(axis) for axis in axes]
-        self.k_original = np.moveaxis(k.copy().reshape(k.shape+(1,)*(3-axes_size)),range(axes_size),new_indices)
-        self.n_original = np.moveaxis(n.copy().reshape(n.shape+(1,)*(3-axes_size)),range(axes_size),new_indices)
+        self.k = np.moveaxis(k.copy().reshape(k.shape+(1,)*(3-axes_size)),range(axes_size),new_indices)
+        self.n = np.moveaxis(n.copy().reshape(n.shape+(1,)*(3-axes_size)),range(axes_size),new_indices)
 
-        self.M_original, self.C_original, self.P_original = self.k_original.shape
+        self.M, self.C, self.P = self.k.shape
         if self.nest != None:
-            assert hp.isnpixok(self.P_original) # number of pixels must be valid if we are using a healpix position basis
-
-    def _downgrade_resolution(self,M,C,P,nside):
-
-        self.M = self.M_original if M == None else M
-        self.C = self.C_original if C == None else C
-        if self.nest == None:
-            self.P = self.P_original if P == None else P
-        elif nside == None:
-            self.nside = hp.npix2nside(self.P_original)
-            self.P = self.P_original
-        else:
-            self.nside = nside
-            assert hp.isnsideok(self.nside)
-            self.P = hp.nside2npix(self.nside)
-
-        _downgrade = lambda A: A.reshape(self.M, self.M_original//self.M, self.C, self.C_original//self.C, self.P, self.P_original//self.P).sum(axis=(1,3,5))
-
-        if self.nest == None:
-            # We are not using spherical geometry
-            self.k = _downgrade(self.k_original)
-            self.n = _downgrade(self.n_original)
-        elif self.nest == True:
-            self.k = self._nest_to_ring(_downgrade(self.k_original))
-            self.n = self._nest_to_ring(_downgrade(self.n_original))
-        else:
-            self.k = self._nest_to_ring(_downgrade(self._ring_to_nest(self.k_original)))
-            self.n = self._nest_to_ring(_downgrade(self._ring_to_nest(self.n_original)))
-
-        del self.k_original, self.n_original
+            assert hp.isnpixok(self.P) # number of pixels must be valid if we are using a healpix position basis
 
     def _load_spherical_basis(self):
         """ Loads in the spherical basis file. If they don't exist, then generate them. The generator must be implemented in each child class. """
@@ -217,19 +183,11 @@ class Base:
 
         print('Spherical basis file loaded')
 
-    def _construct_cholesky_matrix(self,N,lengthscale):
+    def _construct_cholesky_matrix(self, kernel, bins):
 
-        # Create Cholesky matrices
-        dx = np.arange(N)
-        _covariance = np.exp(-np.square(dx[:,None]-dx[None,:])/(2.0*lengthscale*lengthscale))
-
-        if self.pivot:
-            _cholesky = self._pivoted_cholesky(_covariance, M=N, err_tol=self.pivot_tol)
-        else:
-            _cholesky = np.linalg.cholesky(_covariance+1e-15*np.diag(np.ones(N)))
-
-        _N_subspace = _cholesky.shape[1]
-        print(N,_N_subspace)
+        # Compute cholesky
+        _d = np.abs(bins[:,np.newaxis]-bins[np.newaxis,:])
+        _N_subspace, _cholesky = kernel.cholesky(_d)
 
         return _N_subspace, _cholesky
 
@@ -346,54 +304,6 @@ class Base:
 
         return _csr_n, _csr_matrix.data, _csr_matrix.indices, _csr_matrix.indptr
 
-    def _pivoted_cholesky(self, A, M, err_tol = 1e-6):
-        """
-        https://dl.acm.org/doi/10.1016/j.apnum.2011.10.001 implemented by https://github.com/NathanWycoff/PivotedCholesky
-        A simple python function which computes the Pivoted Cholesky decomposition/approximation of positive semi-definite operator. Only diagonal elements and select rows of that operator's matrix represenation are required.
-        get_diag - A function which takes no arguments and returns the diagonal of the matrix when called.
-        get_row - A function which takes 1 integer argument and returns the desired row (zero indexed).
-        M - The maximum rank of the approximate decomposition; an integer.
-        err_tol - The maximum error tolerance, that is difference between the approximate decomposition and true matrix, allowed. Note that this is in the Trace norm, not the spectral or frobenius norm.
-        Returns: R, an upper triangular matrix of column dimension equal to the target matrix. It's row dimension will be at most M, but may be less if the termination condition was acceptably low error rather than max iters reached.
-        """
-
-        get_diag = lambda: np.diag(A).copy()
-        get_row = lambda i: A[i,:]
-
-        d = np.copy(get_diag())
-        N = len(d)
-
-        pi = list(range(N))
-
-        R = np.zeros([M,N])
-
-        err = np.sum(np.abs(d))
-
-        m = 0
-        while (m < M) and (err > err_tol):
-
-            i = m + np.argmax([d[pi[j]] for j in range(m,N)])
-
-            tmp = pi[m]
-            pi[m] = pi[i]
-            pi[i] = tmp
-
-            R[m,pi[m]] = np.sqrt(d[pi[m]])
-            Apim = get_row(pi[m])
-            for i in range(m+1, N):
-                if m > 0:
-                    ip = np.inner(R[:m,pi[m]], R[:m,pi[i]])
-                else:
-                    ip = 0
-                R[m,pi[i]] = (Apim[pi[i]] - ip) / R[m,pi[m]]
-                d[pi[i]] -= pow(R[m,pi[i]],2)
-
-            err = np.sum([d[pi[i]] for i in range(m+1,N)])
-            m += 1
-
-        R = R[:m,:]
-
-        return(R.T)
 
     def _tail(self,filename, lines=1, _buffer=4098):
         """Tail a file and get X lines from the end"""
