@@ -191,8 +191,7 @@ class Base:
 
         # Compute cholesky
         _x = 0.5*(bins[1:]+bins[:-1])
-        _d = np.abs(_x[:,np.newaxis]-_x[np.newaxis,:])
-        _N_subspace, _cholesky = kernel.cholesky(_d)
+        _N_subspace, _cholesky = kernel.cholesky(_x)
 
         return _N_subspace, _cholesky
 
