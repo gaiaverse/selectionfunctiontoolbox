@@ -58,8 +58,8 @@ class Base:
         self._load_spherical_basis()
 
         # Process covariance kernel options
-        self.magnitude_bins = magnitude_bins if magnitude_bins != None else np.arange(self.M)
-        self.colour_bins = colour_bins if colour_bins != None else np.arange(self.C)
+        self.magnitude_bins = magnitude_bins if magnitude_bins != None else np.arange(self.M+1)
+        self.colour_bins = colour_bins if colour_bins != None else np.arange(self.C+1)
         self.magnitude_kernel = magnitude_kernel if magnitude_kernel != None else IdentityKernel(self.M)
         self.colour_kernel = colour_kernel if colour_kernel != None else IdentityKernel(self.C)
 
@@ -186,7 +186,8 @@ class Base:
     def _construct_cholesky_matrix(self, kernel, bins):
 
         # Compute cholesky
-        _d = np.abs(bins[:,np.newaxis]-bins[np.newaxis,:])
+        _x = 0.5*(bins[1:]+bins[:-1])
+        _d = np.abs(_x[:,np.newaxis]-_x[np.newaxis,:])
         _N_subspace, _cholesky = kernel.cholesky(_d)
 
         return _N_subspace, _cholesky
