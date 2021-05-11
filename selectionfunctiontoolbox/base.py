@@ -168,6 +168,10 @@ class Base:
         if self.nest != None:
             assert hp.isnpixok(self.P) # number of pixels must be valid if we are using a healpix position basis
 
+        if self.nest == True:
+            self.k = self._nest_to_ring(self.k)
+            self.n = self._nest_to_ring(self.n)
+
     def _load_spherical_basis(self):
         """ Loads in the spherical basis file. If they don't exist, then generate them. The generator must be implemented in each child class. """
 
