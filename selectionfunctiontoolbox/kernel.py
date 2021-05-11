@@ -21,12 +21,15 @@
 #
 
 import numpy as np
+import copy
 
 class kernelbase:
 
-    def __init__(self, pivot = False, pivot_tol = None, eps_tol = 1e-15, **kwargs):
+    def __init__(self, variance = 1.0, pivot = False, pivot_tol = 0.0, eps_tol = 1e-15, **kwargs):
+        self.variance = variance
         self.pivot = pivot
-        self.pivot_tol = pivot_tol if pivot_tol != None else 0.0
+        self.pivot_tol = pivot_tol
+        self.eps_tol = eps_tol
         self._process_kernel_arguments(**kwargs)
 
     def covariance(self, distance):
@@ -45,6 +48,28 @@ class kernelbase:
         _n_subspace = _cholesky.shape[1]
 
         return _n_subspace, _cholesky
+
+    def __add__(self, other):
+
+        if isinstance(other,(float,int)):
+            _new_kernel = AdditiveKernel(kernelone=self,kerneltwo=FlatKernel(variance=other))
+        elif isinstance(other,kernelbase):
+            _new_kernel = AdditiveKernel(kernelone=self,kerneltwo=other)
+        return _new_kernel
+
+    __radd__ = __add__
+
+    def __mul__(self, other):
+
+        if isinstance(other,(float,int)):
+            _new_kernel = copy.deepcopy(self)
+            _new_kernel.variance = self.variance*other
+        elif isinstance(other,kernelbase):
+            _new_kernel = MultiplicativeKernel(kernelone=self,kerneltwo=other)
+        return _new_kernel
+
+    __rmul__ = __mul__
+
 
     def _process_kernel_arguments(self):
         pass
@@ -98,23 +123,43 @@ class kernelbase:
 
         return(R.T)
 
+class MultiplicativeKernel(kernelbase):
+
+    def covariance(self, distance):
+        return self.variance*self.kernelone.covariance(distance)*self.kerneltwo.covariance(distance)
+
+    def _process_kernel_arguments(self, kernelone, kerneltwo):
+        self.kernelone = copy.deepcopy(kernelone)
+        self.kerneltwo = copy.deepcopy(kerneltwo)
+        self.pivot = kernelone.pivot or kerneltwo.pivot
+        self.pivot_tol = max(kernelone.pivot_tol,kerneltwo.pivot_tol)
+
+class AdditiveKernel(kernelbase):
+
+    def covariance(self, distance):
+        return self.variance*(self.kernelone.covariance(distance)+self.kerneltwo.covariance(distance))
+
+    def _process_kernel_arguments(self, kernelone, kerneltwo):
+        self.kernelone = copy.deepcopy(kernelone)
+        self.kerneltwo = copy.deepcopy(kerneltwo)
+        self.pivot = kernelone.pivot or kerneltwo.pivot
+        self.pivot_tol = max(kernelone.pivot_tol,kerneltwo.pivot_tol)
+
 class SquaredExponentialKernel(kernelbase):
 
     def covariance(self, distance):
         return self.variance*np.exp(-0.5*np.square(distance/self.lengthscale))
 
-    def _process_kernel_arguments(self, lengthscale = None, variance = None):
-        self.lengthscale = lengthscale if lengthscale != None else 1.0
-        self.variance = variance if variance != None else 1.0
+    def _process_kernel_arguments(self, lengthscale = 1.0):
+        self.lengthscale = lengthscale
 
 class Matern12(kernelbase):
 
     def covariance(self, distance):
         return self.variance*np.exp(-distance/self.lengthscale)
 
-    def _process_kernel_arguments(self, lengthscale = None, variance = None):
-        self.lengthscale = lengthscale if lengthscale != None else 1.0
-        self.variance = variance if variance != None else 1.0
+    def _process_kernel_arguments(self, lengthscale = 1.0):
+        self.lengthscale = lengthscale
 
 class Matern32(kernelbase):
 
@@ -122,13 +167,35 @@ class Matern32(kernelbase):
         u = np.sqrt(3.0)*distance/self.lengthscale
         return self.variance*np.exp(-u)*(1.0+u)
 
-    def _process_kernel_arguments(self, lengthscale = None, variance = None):
-        self.lengthscale = lengthscale if lengthscale != None else 1.0
-        self.variance = variance if variance != None else 1.0
+    def _process_kernel_arguments(self, lengthscale = 1.0):
+        self.lengthscale = lengthscale
+
+class RationalQuadratic(kernelbase):
+
+    def covariance(self, distance):
+        return self.variance*np.power(1.0+0.5*np.square(distance/self.lengthscale)/self.mixturescale,-self.mixturescale)
+
+    def _process_kernel_arguments(self, lengthscale = 1.0, mixturescale = 1.0):
+        self.lengthscale = lengthscale
+        self.mixturescale = mixturescale
+
+class Periodic(kernelbase):
+
+    def covariance(self, distance):
+        return self.variance*np.exp(-2.0*np.square(np.sin(np.pi*distance/self.period)/self.lengthscale))
+
+    def _process_kernel_arguments(self, lengthscale = 1.0, period = 1.0):
+        self.lengthscale = lengthscale
+        self.period = period
 
 class IdentityKernel(kernelbase):
 
     def covariance(self, distance):
         covariance = np.zeros_like(distance)
-        covariance[np.isclose(distance,0.0)] = 1.0
+        covariance[np.isclose(distance,0.0)] = self.variance
         return covariance
+
+class FlatKernel(kernelbase):
+
+    def covariance(self, distance):
+        return self.variance*np.ones_like(distance)
