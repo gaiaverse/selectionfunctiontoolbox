@@ -52,7 +52,7 @@ class kernelbase:
     def __add__(self, other):
 
         if isinstance(other,(float,int)):
-            _new_kernel = AdditiveKernel(kernelone=self,kerneltwo=FlatKernel(variance=other))
+            _new_kernel = AdditiveKernel(kernelone=self,kerneltwo=WhiteNoise(variance=other))
         elif isinstance(other,kernelbase):
             _new_kernel = AdditiveKernel(kernelone=self,kerneltwo=other)
         return _new_kernel
@@ -145,7 +145,7 @@ class AdditiveKernel(kernelbase):
         self.pivot = kernelone.pivot or kerneltwo.pivot
         self.pivot_tol = max(kernelone.pivot_tol,kerneltwo.pivot_tol)
 
-class SquaredExponentialKernel(kernelbase):
+class SquaredExponential(kernelbase):
 
     def covariance(self, distance):
         return self.variance*np.exp(-0.5*np.square(distance/self.lengthscale))
@@ -188,14 +188,14 @@ class Periodic(kernelbase):
         self.lengthscale = lengthscale
         self.period = period
 
-class IdentityKernel(kernelbase):
+class WhiteNoise(kernelbase):
 
     def covariance(self, distance):
         covariance = np.zeros_like(distance)
         covariance[np.isclose(distance,0.0)] = self.variance
         return covariance
 
-class FlatKernel(kernelbase):
+class Flat(kernelbase):
 
     def covariance(self, distance):
         return self.variance*np.ones_like(distance)

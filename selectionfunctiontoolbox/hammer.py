@@ -34,6 +34,7 @@ class Hammer(Base):
     def _process_basis_options(self,lmax = 0):
         self.lmax = lmax
         self.S = (self.lmax + 1) ** 2
+        self.nside = hp.npix2nside(self.P)
         self.spherical_basis_file = f'{self.basis_keyword}_nside{self.nside}_lmax{self.lmax}.h5'
 
     def _process_sigma_basis_specific(self,sigma):
@@ -127,7 +128,7 @@ class Hammer(Base):
             int cholesky_u_c[C+1];                // sparse cholesky in colour - where in w each row starts
             '''
             cholesky_loop = '''
-            a[s] = mu[s] + sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
+            a[s] = sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
             '''
         else:
             cholesky_parameters = '''
@@ -135,7 +136,7 @@ class Hammer(Base):
             vector[C_subspace] cholesky_c[C];     // Cholesky factor in colour space
             '''
             cholesky_loop = '''
-            a[s] = mu[s] + sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
+            a[s] = sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
             '''
 
         stan_model = f'''
@@ -153,7 +154,7 @@ class Hammer(Base):
             int pixel_to_ring[P];                 // map P->R
             int lower[L];                         // map S->L
             int upper[L];                         // map S->L
-            vector[S] mu;                         // mean of each harmonic
+            real mu;                              // mean across sky
             vector[S] sigma;                      // sigma of each harmonic
             int k[M,C,P];                         // number of heads
             int n[M,C,P];                         // number of flips
@@ -186,7 +187,7 @@ class Hammer(Base):
 
                     // Compute x
                     for (p in 1:P){{
-                        x[m,c,p] = dot_product(F[pixel_to_ring[p]],azimuth[:,p]);
+                        x[m,c,p] = mu + dot_product(F[pixel_to_ring[p]],azimuth[:,p]);
                     }}
 
                 }}  

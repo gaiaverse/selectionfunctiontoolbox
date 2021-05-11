@@ -51,7 +51,7 @@ class Wrench(Base):
             int cholesky_u_c[C+1];                // sparse cholesky in colour - where in w each row starts
             '''
             cholesky_loop = '''
-            x[m,c,s] = mu[s] + sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
+            x[m,c,s] = mu + sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
             '''
         else:
             cholesky_parameters = '''
@@ -59,7 +59,7 @@ class Wrench(Base):
             vector[C_subspace] cholesky_c[C];     // Cholesky factor in colour space
             '''
             cholesky_loop = '''
-            x[m,c,s] = mu[s] + sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
+            x[m,c,s] = mu + sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
             '''
 
         stan_model = f'''
@@ -70,7 +70,7 @@ class Wrench(Base):
             int<lower=0> C;                       // number of bins in colour space
             int<lower=0> C_subspace;              // number of inducing points in colour space
             int<lower=0> S;                       // number of modes
-            vector[S] mu;                         // mean of each mode
+            real mu;                              // mean across sky
             vector[S] sigma;                      // sigma of each mode
             int k[M,C,P];                         // number of heads
             int n[M,C,P];                         // number of flips

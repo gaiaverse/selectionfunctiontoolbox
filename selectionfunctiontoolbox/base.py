@@ -25,13 +25,13 @@ import healpy as hp
 import tqdm
 import h5py
 import os
-from .kernel import IdentityKernel
+from .kernel import WhiteNoise
 
 class Base:
 
     basis_keyword = 'base' # This must be changed in each file.
 
-    def __init__(self, k, n, file_root, basis_options = {}, axes  = ['magnitude','colour','position'], magnitude_bins = None, colour_bins = None, magnitude_kernel = None, colour_kernel = None, sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4, nest = None, mu = None, sigma = None, spherical_basis_directory='./SphericalBasis',stan_model_directory='./StanModels',stan_output_directory='./StanOutput'):
+    def __init__(self, k, n, file_root, axes  = ['magnitude','colour','position'], magnitude_bins = None, colour_bins = None, magnitude_kernel = None, colour_kernel = None, sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4, nest = None, mu = None, sigma = None, spherical_basis_directory='./SphericalBasis',stan_model_directory='./StanModels',stan_output_directory='./StanOutput', **kwargs):
 
         # Utilities
         self.order_to_nside = lambda order: 2**order
@@ -52,16 +52,16 @@ class Base:
         self._reshape_k_and_n(k,n,axes)
 
         # Process basis-specific options
-        self._process_basis_options(**basis_options)
+        self._process_basis_options(**kwargs)
 
         # Load spherical basis
         self._load_spherical_basis()
 
         # Process covariance kernel options
-        self.magnitude_bins = magnitude_bins if magnitude_bins != None else np.arange(self.M+1)
-        self.colour_bins = colour_bins if colour_bins != None else np.arange(self.C+1)
-        self.magnitude_kernel = magnitude_kernel if magnitude_kernel != None else IdentityKernel(self.M)
-        self.colour_kernel = colour_kernel if colour_kernel != None else IdentityKernel(self.C)
+        self.magnitude_bins = magnitude_bins if magnitude_bins is not None else np.arange(self.M+1)
+        self.colour_bins = colour_bins if colour_bins is not None else np.arange(self.C+1)
+        self.magnitude_kernel = magnitude_kernel if magnitude_kernel is not None else WhiteNoise(self.M)
+        self.colour_kernel = colour_kernel if colour_kernel is not None else WhiteNoise(self.C)
 
         # Compute cholesky matrices
         self.M_subspace, self.cholesky_m = self._construct_cholesky_matrix(self.magnitude_kernel,self.magnitude_bins)
@@ -196,16 +196,9 @@ class Base:
 
         # Process mu
         if mu == None:
-            self.mu = np.zeros(self.S)
-        elif isinstance(mu, np.ndarray):
-            assert mu.shape == (self.S,)
-            self.mu = mu
-        elif callable(mu):
-            self.mu = mu(self.basis['modes'])
-        elif type(mu) in [list,tuple]:
-            self.mu = self._process_mu_basis_specific(mu)
+            self.mu = 0.0
         else:
-            self.mu = mu*np.ones(self.S)
+            self.mu = mu
 
     def _process_sigma(self,sigma):
 

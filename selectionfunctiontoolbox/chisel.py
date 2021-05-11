@@ -211,7 +211,7 @@ class Chisel(Base):
             int cholesky_u_c[C+1];                // sparse cholesky in colour - where in w each row starts
             '''
             cholesky_loop = '''
-            b[s] = mu[s] + sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
+            b[s] = sigma[s] * (cholesky_w_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1] * z[s,cholesky_v_m[cholesky_u_m[m]:cholesky_u_m[m+1]-1], cholesky_v_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]] * cholesky_w_c[cholesky_u_c[c]:cholesky_u_c[c+1]-1]);
             '''
         else:
             cholesky_parameters = '''
@@ -219,7 +219,7 @@ class Chisel(Base):
             vector[C_subspace] cholesky_c[C];     // Cholesky factor in colour space
             '''
             cholesky_loop = '''
-            b[s] = mu[s] + sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
+            b[s] = sigma[s] * cholesky_m[m] * z[s] * cholesky_c[c];
             '''
 
         stan_model = f'''
@@ -234,7 +234,7 @@ class Chisel(Base):
             vector[wavelet_n] wavelet_w;          // sparse wavelets - nonzero elements
             int wavelet_v[wavelet_n];             // sparse wavelets - columns of nonzero elements
             int wavelet_u[P+1];                   // sparse wavelets - where in w each row starts
-            vector[S] mu;                         // mean of each wavelet
+            real mu;                              // mean across sky
             vector[S] sigma;                      // sigma of each wavelet
             int k[M,C,P];                         // number of heads
             int n[M,C,P];                         // number of flips
@@ -260,7 +260,7 @@ class Chisel(Base):
                     }}
                         
                     // Compute x
-                    x[m,c] = csr_matrix_times_vector(P, S, wavelet_w, wavelet_v, wavelet_u, b);
+                    x[m,c] = mu + csr_matrix_times_vector(P, S, wavelet_w, wavelet_v, wavelet_u, b);
 
                 }}  
             }}
