@@ -38,12 +38,13 @@ class Chisel(Base):
             self.j = [_j for _j in range(-1,j+1)]
         self.needlet, self.B, self.p, self.wavelet_tol = needlet, B, p, wavelet_tol
 
-        self.spherical_basis_file = f"{self.basis_keyword}_{self.needlet}_nside{self.nside}_B{self.B}_"+ (f"p{self.p}_" if self.needlet == 'chisquare' else '') + f"tol{self.wavelet_tol}_j[{','.join([str(_i) for _i in self.j])}].h5"
-
         assert self.B > 1.0
         assert self.wavelet_tol >= 0.0
         assert self.needlet in ['littlewoodpaley','chisquare']
         self.S = sum([self.order_to_npix(_j) if _j >= 0 else 1 for _j in self.j])
+        self.nside = hp.npix2nside(self.P)
+
+        self.spherical_basis_file = f"{self.basis_keyword}_{self.needlet}_nside{self.nside}_B{self.B}_"+ (f"p{self.p}_" if self.needlet == 'chisquare' else '') + f"tol{self.wavelet_tol}_j[{','.join([str(_i) for _i in self.j])}].h5"
 
         if self.needlet == 'chisquare':
             from .utils import chisquare

@@ -112,15 +112,10 @@ class Base:
 
         # Save optimum to h5py
         with h5py.File(self.stan_output_directory + self.optimum_results_file, 'w') as orf:
-            orf.create_dataset('opt_runtime', data = runtime)
-            orf.create_dataset('lnP', data = self.optimum_lnp)
             orf.create_dataset('z', data = self.optimum_z, dtype = np.float64, compression = 'lzf', chunks = True)
             orf.create_dataset('x', data = self.optimum_x, dtype = np.float64, compression = 'lzf', chunks = True)
             orf.create_dataset('magnitude_bins', data = self.magnitude_bins, dtype = np.float64)
             orf.create_dataset('colour_bins', data = self.colour_bins, dtype = np.float64)
-            for key in keys:
-                try: orf.create_dataset(key, data = getattr(self, key), dtype = np.float64)
-                except AttributeError: print(f'No attribute: {key}')
         print(f'Optimum values stored in {self.stan_output_directory + self.optimum_results_file}')
 
     def sample(self, number_of_iterations=1000, number_of_warmups=100, threads=5, chains=4, inits=2):
