@@ -131,3 +131,6 @@ dmypy.json
 
 # Data
 *ExampleData*
+*StanModels*
+*SphericalBasis*
+*Output*
