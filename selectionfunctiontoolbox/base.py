@@ -115,15 +115,10 @@ class Base:
         self.optimum_results_file = self.file_root+'_results.h5'
         self.save_h5(t2-t1)
 
-    def scipyoptimize(self, number_of_iterations=1000, ncores=2, bounds=None, method='BFGS', force=False, nfev_init=0, **scipy_kwargs):
+    def scipyoptimize(self, z=None, number_of_iterations=1000, ncores=2, bounds=None, method='BFGS', force=False, nfev_init=0, **scipy_kwargs):
 
         from multiprocessing import Pool
         import scipy
-
-        sigma = np.unique(self.model_input['sigma'], return_index=True)
-        print('Sigma: ', sigma[0][np.argsort(sigma[1])])
-        if type(self.model_input['mu']) is not np.ndarray:
-            self.model_input['mu'] = np.zeros(self.sigma.shape)+self.model_input['mu']
 
         print('Initialising arguments.')
         self._generate_args(nsets=ncores, sparse=True)
@@ -148,17 +143,16 @@ class Base:
                 return -lnL + 0.5*np.sum(z**2), -lnL_grad.flatten() + z
             callback=evaluators[0].fcall
 
-            # global tinit; tinit = time.time()
+            print('Evaluate initial likelihood')
+            if z is None: z = np.random.normal(size=(self.S, self.M_subspace, self.C_subspace))
 
-            print('Running z0 likelihood')
-            z0 = np.random.normal(size=(self.S, self.M_subspace, self.C_subspace))
-            likelihood(z0);
-            evaluators[0].fcall(z0)
+            if number_of_iterations==0: return likelihood(z);
+            else: likelihood(z); evaluators[0].fcall(z)
 
             import time
             print('Running optimisation')
             t1 = time.time()
-            res = scipy.optimize.minimize(likelihood, z0.flatten(), method=method, jac=True, bounds=bounds, callback=callback, **scipy_kwargs)
+            res = scipy.optimize.minimize(likelihood, z.flatten(), method=method, jac=True, bounds=bounds, callback=callback, **scipy_kwargs)
             t2 = time.time()
             print(f'Finished optimisation, it took {t2-t1:.1f} seconds')
 
@@ -172,6 +166,11 @@ class Base:
 
         self.optimum_results_file = self.file_root+'_results.h5'
         self.save_h5(t2-t1)
+
+    def _get_likelihood(self, z, ncores=1):
+
+        return self.scipyoptimize(z, ncores=ncores, number_of_iterations=0)
+
 
     def _get_bx(self, z):
 
@@ -469,7 +468,7 @@ class Base:
 
             wavelet_args_set  = [np.moveaxis(self.k, -1,0).astype(np.int64)[iP:iP+P_set[iset]].copy(),
                                  np.moveaxis(self.n, -1,0).astype(np.int64)[iP:iP+P_set[iset]].copy()] \
-                              + [copy.copy(self.model_input[arg]) for arg in ['mu', 'sigma']] \
+                              + [np.zeros(self.S)+copy.copy(self.model_input[arg]) for arg in ['mu', 'sigma']] \
                               + [arg[int(self.model_input['wavelet_u'][iP]-1):int(self.model_input['wavelet_u'][iP+P_set[iset]]-1)].copy() \
                                                                         for arg in [wavelet_u,wavelet_v,wavelet_w]] \
                               + cholesky_args
