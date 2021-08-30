@@ -28,8 +28,6 @@ import os
 from .kernel import WhiteNoise
 import copy, time
 
-from PythonModels.wavelet_magnitude_colour_position import wavelet_magnitude_colour_position_sparse, wavelet_x_sparse, wavelet_b_sparse
-
 class Base:
 
     basis_keyword = 'base' # This must be changed in each file.
@@ -37,7 +35,7 @@ class Base:
     def __init__(self, k, n, file_root, axes  = ['magnitude','colour','position'],
                         magnitude_bins = None, colour_bins = None, magnitude_kernel = None, colour_kernel = None,
                         sparse = False, sparse_tol = 1e-4, pivot = False, pivot_tol = 1e-4,
-                        nest = None, mu = None, sigma = None, load_stan = True,
+                        nest = None, mu = None, sigma = None,
                         spherical_basis_directory='./SphericalBasis',model_directory='./StanModels',output_directory='./StanOutput',
                         **kwargs):
 
@@ -79,9 +77,6 @@ class Base:
         self._process_mu(mu)
         self._process_sigma(sigma)
 
-        # Load Stan Model
-        if load_stan: self._load_stan_model()
-
         # Construct Stan Input
         self._construct_input()
 
@@ -89,6 +84,8 @@ class Base:
         self.file_root = file_root
 
     def stanoptimize(self, number_of_iterations = 1000, inits = 2):
+
+        if not hasattr(self, 'stan_model'): self._load_stan_model()
 
         print('Running optimisation')
         t1 = time.time()
@@ -115,18 +112,20 @@ class Base:
         self.optimum_results_file = self.file_root+'_results.h5'
         self.save_h5(t2-t1)
 
-    def scipyoptimize(self, z=None, number_of_iterations=1000, ncores=2, bounds=None, method='BFGS', force=False, nfev_init=0, **scipy_kwargs):
+    def scipyoptimize(self, z=None, number_of_iterations=1000, ncores=2, bounds=None, method='BFGS',
+                            force=False, nfev_init=0, verbose=0, **scipy_kwargs):
 
         from multiprocessing import Pool
         import scipy
 
-        print('Initialising arguments.')
-        self._generate_args(nsets=ncores, sparse=True)
+        if not hasattr(self, 'scipy_args'): self._construct_scipy_input(sparse=self.sparse)
+        self._parallelize_scipy_model(nsets=ncores)
 
         print('Initialising multiprocessing processes.')
         global evaluators
         evaluators = [evaluate(self.P_set[i], self.S, self.M, self.C, self.M_subspace, self.C_subspace,
-                               self.wavelet_args[i], j=self.j) for i in range(ncores)]
+                               self.scipy_args_set[i],
+                               self.likelihood_function, j=self.j, verbose=verbose) for i in range(ncores)]
         evaluators[0].nfev=nfev_init
 
         self.optimum_results_file = self.file_root+'_scipy_results.h5'
@@ -141,7 +140,8 @@ class Base:
                 lnL, lnL_grad =  evaluators[0].merge_likelihoods(evaluations)
 
                 return -lnL + 0.5*np.sum(z**2), -lnL_grad.flatten() + z
-            callback=evaluators[0].fcall
+            if verbose>0: callback=evaluators[0].fcall
+            else: callback=None
 
             print('Evaluate initial likelihood')
             if z is None: z = np.random.normal(size=(self.S, self.M_subspace, self.C_subspace))
@@ -158,11 +158,11 @@ class Base:
 
             self.optimum_lnp_history = np.array(evaluators[0].lnlike_history)
 
-        print('Processing results.')
-        self.optimum_lnp = -res['fun']
-        self.optimum_z = res['x'].reshape((self.S, self.M_subspace, self.C_subspace))
-        self.optimum_b, self.optimum_x = self._get_bx(self.optimum_z)
-        if self.nest: self.optimum_x = self._ring_to_nest(np.moveaxis(self.optimum_x, 0, -1))
+            print('Processing results.')
+            self.optimum_lnp = -res['fun']
+            self.optimum_z = res['x'].reshape((self.S, self.M_subspace, self.C_subspace))
+            self.optimum_x = self._get_x(self.optimum_z)
+            if self.nest: self.optimum_x = self._ring_to_nest(np.moveaxis(self.optimum_x, 0, -1))
 
         self.optimum_results_file = self.file_root+'_results.h5'
         self.save_h5(t2-t1)
@@ -171,27 +171,6 @@ class Base:
 
         return self.scipyoptimize(z, ncores=ncores, number_of_iterations=0)
 
-
-    def _get_bx(self, z):
-
-        from numba.typed import List
-        print('Setting cholesky arguments')
-        wavelet = List(zip(self.model_input['wavelet_U'].copy()-1,
-                           self.model_input['wavelet_v'].copy()-1,
-                           self.model_input['wavelet_w'].copy()))
-        cholesky_m = List(zip(*self.wavelet_args[0][7:10]))
-        cholesky_c = List(zip(*self.wavelet_args[0][10:13]))
-
-        print('Get b')
-        b = np.zeros((self.S, self.M, self.C))
-        b = wavelet_b_sparse(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C, self.S,
-                             *self.wavelet_args[0][2:4], cholesky_m, cholesky_c, b)
-        print('Get x')
-        x = np.zeros((self.P, self.M, self.C))
-        x = wavelet_x_sparse(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C,
-                             *self.wavelet_args[0][2:4], wavelet, cholesky_m, cholesky_c, x)
-
-        return b, x
 
     def save_h5(self, runtime, *keys):
 
@@ -319,6 +298,10 @@ class Base:
     def _yield_stan_model(self):
         pass
 
+    def _construct_scipy_input(self):
+        pass
+
+
     def _construct_input(self):
 
         self.model_input = {'k':self.k,
@@ -424,60 +407,7 @@ class Base:
     def _generate_spherical_basis(self,gsb_file):
         pass
 
-    def _cholesky_args(self, sparse=False):
 
-        if sparse:
-            cholesky_u_m = np.zeros(len(self.model_input['cholesky_v_m']), dtype=int)
-            for iS, iY in enumerate(self.model_input['cholesky_u_m'][1:]-1):
-                cholesky_u_m[iY:] += 1
-            cholesky_u_c = np.zeros(len(self.model_input['cholesky_v_c']), dtype=int)
-            for iS, iY in enumerate(self.model_input['cholesky_u_c'][1:]-1):
-                cholesky_u_c[iY:] += 1
-
-            cholesky_args = [cholesky_u_m,
-                             self.model_input['cholesky_v_m']-1,
-                             self.model_input['cholesky_w_m'],
-                             cholesky_u_c,
-                             self.model_input['cholesky_v_c']-1,
-                             self.model_input['cholesky_w_c']]
-
-            #self.wavelet_model = wavelet_magnitude_colour_position_sparse
-        elif not sparse:
-            cholesky_args = [self.cholesky_m, self.cholesky_c]
-
-        return cholesky_args
-
-    def _generate_args(self, nsets=1, sparse=False):
-
-        cholesky_args = self._cholesky_args(sparse=sparse)
-
-        P_set = np.zeros(nsets, dtype=int) + self.P//nsets
-        P_set[:self.P - np.sum(P_set)] += 1
-        print('P sets: ', P_set, self.P)
-
-        wavelet_u = self.model_input['wavelet_U'].copy()-1
-        wavelet_v = self.model_input['wavelet_v'].copy()-1
-        wavelet_w = self.model_input['wavelet_w'].copy()
-
-        self.wavelet_args = []
-        iP = 0
-        for iset in range(nsets):
-
-            lnL_grad = np.zeros((self.S, self.M, self.C))
-            x = np.zeros((self.M, self.C))
-
-            wavelet_args_set  = [np.moveaxis(self.k, -1,0).astype(np.int64)[iP:iP+P_set[iset]].copy(),
-                                 np.moveaxis(self.n, -1,0).astype(np.int64)[iP:iP+P_set[iset]].copy()] \
-                              + [np.zeros(self.S)+copy.copy(self.model_input[arg]) for arg in ['mu', 'sigma']] \
-                              + [arg[int(self.model_input['wavelet_u'][iP]-1):int(self.model_input['wavelet_u'][iP+P_set[iset]]-1)].copy() \
-                                                                        for arg in [wavelet_u,wavelet_v,wavelet_w]] \
-                              + cholesky_args
-            wavelet_args_set[4]-=iP
-
-            self.wavelet_args.append(wavelet_args_set)
-            iP += P_set[iset]
-
-        self.P_set = P_set
 
 def evaluate_likelihood(iz):
     return evaluators[iz[0]].evaluate_likelihood(iz[1])
@@ -486,7 +416,7 @@ def evaluate_x(iz):
 
 class evaluate():
 
-    def __init__(self, P, S, M, C, M_subspace, C_subspace, wavelet_args, j=[-1]):
+    def __init__(self, P, S, M, C, M_subspace, C_subspace, scipy_args, likelihood_function, j=[-1], verbose=0):
 
         self.P=P
         self.S=S
@@ -494,7 +424,9 @@ class evaluate():
         self.C=C
         self.M_subspace=M_subspace
         self.C_subspace=C_subspace
-        self.wavelet_args=wavelet_args
+        self.scipy_args=scipy_args
+
+        self.likelihood_function = likelihood_function
 
         self.j=j
 
@@ -502,39 +434,23 @@ class evaluate():
         self.lnL_grad = np.zeros((self.S, self.M_subspace, self.C_subspace))
 
         self.tinit = time.time()
-        self.fshift = 1.
         self.lnlike_iter = 0.
         self.gnorm_iter = 0.
         self.nfev = 0
-        self.nfev_print = -100
         self.lnlike_history = []
-        self.zshift_history = []
         self.lnlike_smhistory = []
-        self.save_threshold = 1e-4
         self.z_prev = np.zeros((self.S,self.M_subspace,self.C_subspace))
-        self.F0 = 1.
-        self.gof = 1.
+
+        self.verbose=verbose
 
     def evaluate_likelihood(self, z):
 
         x = np.zeros((self.P, self.M, self.C))
         lnL_grad = np.zeros((self.S, self.M_subspace, self.C_subspace))
 
-        lnL, lnL_grad = wavelet_magnitude_colour_position_sparse(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C, self.P, *self.wavelet_args, x, lnL_grad)
+        lnL, lnL_grad = self.likelihood_function(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C, self.P, *self.scipy_args, x, lnL_grad)
 
         return lnL, lnL_grad
-
-    def evaluate_x(self, z):
-
-        from numba.typed import List
-        wavelet = List(zip(*self.wavelet_args[4:7]))
-        cholesky_m = List(zip(*self.wavelet_args[7:10]))
-        cholesky_c = List(zip(*self.wavelet_args[10:13]))
-
-        x = np.zeros((self.P, self.M, self.C))
-        x = wavelet_x_sparse(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C, *self.wavelet_args[2:4], wavelet, cholesky_m, cholesky_c, x)
-
-        return x
 
     def merge_likelihoods(self, evaluations):
 
@@ -554,7 +470,7 @@ class evaluate():
 
     def fcall(self, X):
 
-        if self.nfev-self.nfev_print>=2:
+        if self.nfev%self.verbose==0:
             self.lnlike_smhistory.append(self.lnlike_iter)
 
             i=0; std_str=""
@@ -564,8 +480,6 @@ class evaluate():
                 i+=int(hp.nside2npix(pow(2,j))+0.1)
 
             print(f't={int(time.time()-self.tinit):03d}, n={self.nfev:02d}, lnL={self.lnlike_iter:.0f}, gnorm={self.gnorm_iter:.5f}')
-
-            self.nfev_print = self.nfev
 
             self.z_prev=X.copy()
             self.lnL_prev=self.lnlike_iter

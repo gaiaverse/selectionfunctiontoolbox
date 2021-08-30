@@ -24,7 +24,10 @@ import numpy as np
 import healpy as hp
 import tqdm
 import h5py
+import copy
 from .base import Base
+
+from PythonModels.wavelet_magnitude_colour_position import wavelet_magnitude_colour_position_sparse, wavelet_x_sparse, wavelet_b_sparse
 
 class Chisel(Base):
 
@@ -196,7 +199,7 @@ class Chisel(Base):
                 f.create_dataset('wavelet_U', data = wavelet_U, dtype = np.uint64, scaleoffset=0, **save_kwargs)
                 f.create_dataset('wavelet_n', data = wavelet_n)
                 f.create_dataset('modes', data = wavelet_j, dtype = np.uint64, scaleoffset=0, **save_kwargs)
-        else: 
+        else:
             return Y
 
     def _yield_stan_model(self):
@@ -247,23 +250,23 @@ class Chisel(Base):
         transformed parameters {{
 
             vector[P] x[M,C]; // Probability in logit-space
-                
+
             // Loop over magnitude and colour
             for (m in 1:M){{
                 for (c in 1:C){{
-                    
+
                     // Local variable
                     vector[S] b;
-                        
+
                     // Compute b
                     for (s in 1:S){{
                         {cholesky_loop}
                     }}
-                        
+
                     // Compute x
                     x[m,c] = mu + csr_matrix_times_vector(P, S, wavelet_w, wavelet_v, wavelet_u, b);
 
-                }}  
+                }}
             }}
 
         }}
@@ -273,16 +276,116 @@ class Chisel(Base):
             for (s in 1:S){{
                 to_vector(z[s]) ~ std_normal();
             }}
-            
+
             // Likelihood
             for (m in 1:M){{
                 for (c in 1:C){{
                     k[m,c] ~ binomial_logit(n[m,c], x[m,c]);
                 }}
             }}
-            
+
         }}
         '''
 
         return stan_model
 
+    def _cholesky_args(self, sparse=False):
+
+        if sparse:
+            cholesky_u_m = np.zeros(len(self.model_input['cholesky_v_m']), dtype=int)
+            for iS, iY in enumerate(self.model_input['cholesky_u_m'][1:]-1):
+                cholesky_u_m[iY:] += 1
+            cholesky_u_c = np.zeros(len(self.model_input['cholesky_v_c']), dtype=int)
+            for iS, iY in enumerate(self.model_input['cholesky_u_c'][1:]-1):
+                cholesky_u_c[iY:] += 1
+
+            cholesky_args = [cholesky_u_m,
+                             self.model_input['cholesky_v_m']-1,
+                             self.model_input['cholesky_w_m'],
+                             cholesky_u_c,
+                             self.model_input['cholesky_v_c']-1,
+                             self.model_input['cholesky_w_c']]
+
+        elif not sparse:
+            cholesky_args = [self.cholesky_m, self.cholesky_c]
+
+        return cholesky_args
+
+    def _construct_scipy_input(self, sparse=False):
+
+        if not sparse: raise ValueError(f'Sparse={sparse}. Only sparse model implemented for Chisel with scipy.')
+
+        cholesky_args = self._cholesky_args(sparse=sparse)
+
+        lnL_grad = np.zeros((self.S, self.M, self.C))
+        x = np.zeros((self.M, self.C))
+
+        self.scipy_args = [np.moveaxis(self.k, -1,0).astype(np.int64).copy(),
+                           np.moveaxis(self.n, -1,0).astype(np.int64).copy()] \
+                          + [np.zeros(self.S)+copy.copy(self.model_input[arg]) for arg in ['mu', 'sigma']]\
+                          + [self.model_input['wavelet_U'].copy()-1,
+                             self.model_input['wavelet_v'].copy()-1,
+                             self.model_input['wavelet_w'].copy()]\
+                          + cholesky_args
+
+        if sparse: self.likelihood_function = wavelet_magnitude_colour_position_sparse
+
+    def _parallelize_scipy_model(self, nsets=1):
+
+        P_set = np.zeros(nsets, dtype=int) + self.P//nsets
+        P_set[:self.P - np.sum(P_set)] += 1
+        print('P sets: ', P_set, self.P)
+
+        wavelet_u = self.model_input['wavelet_U'].copy()-1
+        wavelet_v = self.model_input['wavelet_v'].copy()-1
+        wavelet_w = self.model_input['wavelet_w'].copy()
+
+        self.scipy_args_set = []
+        iP = 0
+        for iset in range(nsets):
+
+            lnL_grad = np.zeros((self.S, self.M, self.C))
+            x = np.zeros((self.M, self.C))
+
+            scipy_args_set  = [self.scipy_args[i][iP:iP+P_set[iset]].copy() for i in [0,1]] \
+                              + [self.scipy_args[i] for i in [2,3]] \
+                              + [self.scipy_args[i][int(self.model_input['wavelet_u'][iP]-1):int(self.model_input['wavelet_u'][iP+P_set[iset]]-1)].copy() \
+                                                                        for i in [4,5,6]] \
+                              + [self.scipy_args[i] for i in range(7,len(self.scipy_args))]
+            scipy_args_set[4]-=iP
+
+            self.scipy_args_set.append(scipy_args_set)
+            iP += P_set[iset]
+
+        self.P_set = P_set
+
+    def _get_b(self, z):
+
+        from numba.typed import List
+
+        if not hasattr(self, 'scipy_args'): self._load_scipy_model(sparse=self.sparse)
+
+        print('Setting cholesky arguments')
+        cholesky_m = List(zip(*self.scipy_args[7:10]))
+        cholesky_c = List(zip(*self.scipy_args[10:13]))
+
+        b = np.zeros((self.S, self.M, self.C))
+        b = wavelet_b_sparse(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C, self.S, *self.scipy_args[2:4], cholesky_m, cholesky_c, b)
+
+        return b
+
+    def _get_x(self, z):
+
+        from numba.typed import List
+
+        if not hasattr(self, 'scipy_args'): self._load_scipy_model(sparse=self.sparse)
+
+        print('Setting cholesky arguments')
+        wavelet = List(zip(*self.scipy_args[4:7]))
+        cholesky_m = List(zip(*self.scipy_args[7:10]))
+        cholesky_c = List(zip(*self.scipy_args[10:13]))
+
+        x = np.zeros((self.P, self.M, self.C))
+        x = wavelet_x_sparse(z.reshape((self.S, self.M_subspace, self.C_subspace)), self.M, self.C, *self.scipy_args[2:4], wavelet, cholesky_m, cholesky_c, x)
+
+        return x
