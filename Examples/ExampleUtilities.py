@@ -99,7 +99,7 @@ def position_selection_plot(filename,magnitudes_to_plot,magnitude_bins,n,k,x,mas
     im = plt.cm.ScalarMappable(norm=norm, cmap=probability_kwargs['cmap']); im.set_array([])
     cbar = plt.colorbar(im, cax=ax, orientation='horizontal', ticks=ticks)
     cbar.set_ticklabels(tick_labels)
-    cbar.set_label(r'$x = \mathrm{logit}(p)$',fontsize=14,labelpad = 6)
+    cbar.set_label(r'$x = \mathrm{logit}(q)$',fontsize=14,labelpad = 6)
     ax.xaxis.set_ticks_position('top')
     ax.xaxis.set_label_position('top')
 
