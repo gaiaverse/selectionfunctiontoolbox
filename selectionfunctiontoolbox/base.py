@@ -335,7 +335,6 @@ class Base:
             # Correct for Stan being one-indexed - only apply to one-dimensional collections of integers
             if isinstance(v, np.ndarray) and v.dtype in integer_types:
                 if k not in ['n','k','modes']:
-                    print('Incrementing',k)
                     v = v + 1
 
             # Deal with serialisation issue with integers
