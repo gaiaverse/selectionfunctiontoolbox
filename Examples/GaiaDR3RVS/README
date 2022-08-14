@@ -1,0 +1,46 @@
+How to estimate the selection function for subsamples of DR3 using the method in ...
+
+An example for RVS can be run by executing EvaluateDR3RVS.sh
+
+1) Run query on Gaia Archive to get binned counts of Gaia total population and subset
+e.g. QueryDR3.py - unfortunately astroquery doesn't appear to work on large queries so it may be best to perform the query on the Gaia server.
+
+Example query for sources with RUWE<1.4:
+'''
+SELECT magnitude, colour, position, count(*) as n, sum(selection) as k
+                     FROM ( SELECT  to_integer(floor((phot_g_mean_mag)/0.5)) as magnitude,
+                                    to_integer(floor((phot_g_mean_mag-phot_rp_mean_mag)/1.0)) as colour,
+                                    gaia_healpix_index(6, source_id) as position,
+                                    to_integer(IF_THEN_ELSE(ruwe<1.4 , 1.0, 0.0)) as selection
+                            FROM gaiadr3.gaia_source where phot_g_mean_mag between 1.6 and 22
+                                                        and phot_rp_mean_mag is not null
+                                                        and random_index<1000000) as subquery
+                     GROUP BY magnitude, colour, position
+'''
+
+The magnitude and colour range, bin widths and healpix level can be changed inside the subquery.
+The selection query can be changed to find a different subpopulation, e.g. sources with RVS
+'''
+SELECT magnitude, colour, position, count(*) as n, sum(selection) as k
+                     FROM ( SELECT  to_integer(floor((phot_g_mean_mag)/0.5)) as magnitude,
+                                    to_integer(floor((phot_g_mean_mag-phot_rp_mean_mag)/1.0)) as colour,
+                                    gaia_healpix_index(4, source_id) as position,
+                                    to_integer(IF_THEN_ELSE(rv_nb_transits>0 , 1.0, 0.0)) as selection
+                            FROM gaiadr3.gaia_source where phot_g_mean_mag between 1.6 and 17.6
+                                                        and phot_rp_mean_mag is not null
+                                                        and random_index<1000000) as subquery
+                     GROUP BY magnitude, colour, position
+'''
+
+Some of the higher resolution queries may take a while to run!
+
+2) Evaluate selection function based using the binned data
+e.g. EvaluateDR3RVS.py
+
+Load in binned data and convert to magnitude-colour-position matrix (decreasing resolution if necessary).
+
+Initialise and run pychisel.minimize_mp which will parallelize the likelihood evaluation for each optimization step.
+
+Produces an output file
+e.g. chisquare_rvs_jmax3_nside16_M61_CGR1_lm0.3lc300_B2.0_scipy_results.h5
+which can be used with selectionfunctions package to evaluate the selection function at any coordinates.
